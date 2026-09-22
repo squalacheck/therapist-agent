@@ -26,8 +26,12 @@ red=$'\033[31m'; grn=$'\033[32m'; off=$'\033[0m'
 fail=0
 flag() { echo "${red}  BLOCK${off} $*"; fail=1; }
 
-if [ "${1:-}" = "--all" ] || ! git rev-parse --git-dir >/dev/null 2>&1; then
+if ! git rev-parse --git-dir >/dev/null 2>&1; then
   mapfile -t files < <(find . -type f -not -path './.git/*' | sed 's|^\./||')
+elif [ "${1:-}" = "--all" ]; then
+  # Everything git could publish: tracked files plus anything new that is
+  # not ignored. Ignored files (.env, the corpus) stay local by design.
+  mapfile -t files < <(git ls-files -co --exclude-standard)
 else
   mapfile -t files < <(git diff --cached --name-only --diff-filter=ACMR)
   [ ${#files[@]} -eq 0 ] && mapfile -t files < <(git ls-files)
