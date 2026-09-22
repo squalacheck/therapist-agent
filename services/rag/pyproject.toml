@@ -1,0 +1,51 @@
+[project]
+name = "therapist-rag"
+version = "0.1.0"
+description = "OpenAI-compatible agent service: retrieval, session memory, safety."
+requires-python = ">=3.12"
+
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.32",
+    "pydantic>=2.9",
+    "pydantic-settings>=2.6",
+    "httpx>=0.27",
+    "qdrant-client>=1.12",
+    "sqlalchemy[asyncio]>=2.0.36",
+    "asyncpg>=0.30",
+    "pgvector>=0.3.6",
+    # >=5.4 is not cosmetic. Qwen3-Reranker-0.6B ships a modules.json that
+    # names sentence_transformers.cross_encoder.modules.logit_score.LogitScore,
+    # which does not exist before 5.4. On 3.x, CrossEncoder falls back to
+    # AutoModelForSequenceClassification and quietly builds a RANDOMLY
+    # INITIALISED scoring head — it loads, it returns numbers, and every
+    # reranked result is noise. Exactly the silent failure `make eval-retrieval`
+    # is there to catch.
+    "sentence-transformers>=5.4",
+    "torch>=2.5",
+    # qdrant-client computes the BM25 sparse vector locally via fastembed
+    # (see models.Document(model="Qdrant/bm25") in retrieval.py). Without
+    # this the hybrid half of hybrid search raises at query time.
+    "fastembed>=0.5",
+    "tiktoken>=0.8",
+    "structlog>=24.4",
+    "pyyaml>=6.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.3",
+    "pytest-asyncio>=0.24",
+    "respx>=0.21",
+    "ruff>=0.7",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"

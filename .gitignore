@@ -1,0 +1,20 @@
+.env
+data/raw/*
+!data/raw/dropfolder/
+!data/raw/dropfolder/.gitkeep
+data/processed/*
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Runtime flags (shutdown requests) — state, not source.
+data/runtime/shutdown-requested
+data/runtime/*
+!data/runtime/.gitkeep
+
+# Never commit personal data. These are belt-and-braces: none of them
+# should ever exist inside the repo, but if one does, git must not see it.
+*.sql.gz
+*.dump
+*.jsonl
+backups/

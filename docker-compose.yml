@@ -1,0 +1,326 @@
+####################################################################
+# Local Therapist Agent — core stack
+#
+#   make up      start everything (runs gpu-guard first)
+#   make down    stop everything
+#   make logs    tail all services
+#
+# Network topology is deliberate:
+#   backend   internal:true  -> no route off this machine.
+#                              vllm, rag, qdrant, postgres live here.
+#                              Conversation content cannot egress.
+#   frontend  normal bridge  -> open-webui + rag. Serves your browser.
+#
+# Ingestion runs on a separate, egress-capable network and only on
+# demand: see docker-compose.ingest.yml
+####################################################################
+
+name: therapist-agent
+
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+services:
+  # ---------------------------------------------------------------
+  # Inference. A known-good RTX 5090 configuration. Do not "clean up" the flags in entrypoint.sh without
+  # reading the comments there first — several are load-bearing.
+  # ---------------------------------------------------------------
+  vllm:
+    build:
+      context: ./infra/vllm
+      args:
+        VLLM_VERSION: ${VLLM_VERSION:-v0.28.0}
+    image: therapist-agent/vllm:${VLLM_VERSION:-v0.28.0}
+    container_name: ta-vllm
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      MODEL_ID: ${MODEL_ID}
+      SERVED_MODEL_NAME: ${SERVED_MODEL_NAME:-therapist-base}
+      MAX_MODEL_LEN: ${MAX_MODEL_LEN:-32768}
+      GPU_MEMORY_UTILIZATION: ${GPU_MEMORY_UTILIZATION:-0.94}
+      KV_CACHE_DTYPE: ${KV_CACHE_DTYPE:-auto}
+      ATTENTION_BACKEND: ${ATTENTION_BACKEND:-FLASH_ATTN}
+      MAX_NUM_SEQS: ${MAX_NUM_SEQS:-2}
+      SPECULATIVE_MTP: ${SPECULATIVE_MTP:-false}
+      TOOL_CALL_PARSER: ${TOOL_CALL_PARSER:-qwen3_xml}
+      # Hard-won on this exact GPU — see docs/gpu-notes.md
+      PYTORCH_CUDA_ALLOC_CONF: expandable_segments:True
+      VLLM_USE_FLASHINFER_SAMPLER: "0"
+      HF_HOME: /hf
+      HF_HUB_OFFLINE: "1"
+    volumes:
+      # The weights, read-only, loaded by path rather than by repo id.
+      # HF_HUB_OFFLINE=1 below means a repo id would fail hub resolution
+      # even with the files present; a bind-mounted path cannot.
+      - ${MODEL_DIR:-~/models}:/models:ro
+      # The HF cache is still mounted so the tokenizer and any auxiliary
+      # downloads resolve locally rather than reaching for the network.
+      - ${HF_CACHE_DIR:-~/.cache/huggingface}:/hf
+      # vLLM's own cache, including the FlashInfer autotune results. Without
+      # this the autotuner re-profiles fp4_gemm on every single start, which
+      # is ~2 minutes of a cold start you never need to pay twice.
+      - vllm-cache:/root/.cache/vllm
+    # No `ports:` here, deliberately. `backend` is internal:true, and Docker
+    # SILENTLY DISCARDS published ports on an internal network — the mapping
+    # never appears in `docker port`, and 127.0.0.1:8002 just refuses the
+    # connection while the container sits there perfectly healthy. That looks
+    # exactly like a model that failed to load, and it is not.
+    #
+    # Publishing it would mean putting vllm on the frontend bridge, which
+    # would hand the container that holds every full prompt a route to the
+    # internet. The isolation is the point. Reach the model through the
+    # backend network instead:
+    #     make model-api              -> /v1/models
+    #     make model-api P=/health
+    networks: [backend]
+    shm_size: "8gb"
+    ipc: host
+    logging: *default-logging
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8000/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      # Cold start on a 27B model in eager mode is slow. Be patient here;
+      # too short a start_period causes a restart loop that looks like a
+      # model failure but is really just a healthcheck misconfiguration.
+      start_period: 600s
+      retries: 5
+
+  # ---------------------------------------------------------------
+  # Corpus vector store. Hybrid dense + sparse, with payload filtering
+  # so later phases can scope retrieval by therapeutic modality.
+  # ---------------------------------------------------------------
+  qdrant:
+    image: qdrant/qdrant:${QDRANT_VERSION:-v1.12.4}
+    container_name: ta-qdrant
+    restart: unless-stopped
+    environment:
+      QDRANT__TELEMETRY_DISABLED: "true"
+      QDRANT__SERVICE__ENABLE_CORS: "false"
+    volumes:
+      - qdrant-data:/qdrant/storage
+    networks: [backend]
+    logging: *default-logging
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c ':> /dev/tcp/127.0.0.1/6333' || exit 1"]
+      interval: 15s
+      timeout: 5s
+      start_period: 30s
+      retries: 5
+
+  # ---------------------------------------------------------------
+  # Session memory + conversation store.
+  # ---------------------------------------------------------------
+  postgres:
+    image: pgvector/pgvector:${PG_VERSION:-pg17}
+    container_name: ta-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-therapist}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: ${POSTGRES_DB:-therapist}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./infra/postgres/init:/docker-entrypoint-initdb.d:ro
+    networks: [backend]
+    logging: *default-logging
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-therapist} -d ${POSTGRES_DB:-therapist}"]
+      interval: 10s
+      timeout: 5s
+      start_period: 30s
+      retries: 5
+
+  # ---------------------------------------------------------------
+  # The agent itself. Presents an OpenAI-compatible API so Open WebUI
+  # (or anything else, later) sees it as just another model.
+  # ---------------------------------------------------------------
+  rag:
+    build:
+      context: ./services/rag
+    image: therapist-agent/rag:latest
+    container_name: ta-rag
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      VLLM_BASE_URL: http://vllm:8000/v1
+      VLLM_MODEL: ${SERVED_MODEL_NAME:-therapist-base}
+      QDRANT_URL: http://qdrant:6333
+      QDRANT_COLLECTION: ${QDRANT_COLLECTION:-corpus}
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-therapist}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-therapist}
+      EMBED_MODEL: ${EMBED_MODEL:-Qwen/Qwen3-Embedding-0.6B}
+      RERANK_MODEL: ${RERANK_MODEL:-Qwen/Qwen3-Reranker-0.6B}
+      EMBED_DEVICE: ${EMBED_DEVICE:-cpu}
+      # Keep the prompt budget in step with the model's real context window.
+      MAX_CONTEXT_TOKENS: ${MAX_MODEL_LEN:-32768}
+      ENABLE_THINKING: ${ENABLE_THINKING:-false}
+      RETRIEVAL_ENABLED: ${RETRIEVAL_ENABLED:-false}
+      MEMORY_ENABLED: ${MEMORY_ENABLED:-false}
+      SAFETY_ENABLED: ${SAFETY_ENABLED:-true}
+      SAFETY_OUTPUT_CHECK: ${SAFETY_OUTPUT_CHECK:-true}
+      PACING_ENABLED: ${PACING_ENABLED:-true}
+      TIME_AWARENESS: ${TIME_AWARENESS:-true}
+      SHUTDOWN_ON_END: ${SHUTDOWN_ON_END:-true}
+      DAILY_ENABLED: ${DAILY_ENABLED:-true}
+      PARTNER_NAME: ${PARTNER_NAME:-}
+      # The daily list is keyed by local date. Without this the container
+      # runs in UTC, and a plan written in the evening can land on tomorrow.
+      # `make init` fills this in from the host.
+      TZ: ${TZ:-UTC}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      HF_HOME: /hf
+      HF_HUB_OFFLINE: "1"
+      # fastembed does NOT honour HF_HOME — it has its own cache, and left
+      # at its default the BM25 model lands somewhere unmounted. This
+      # container has no internet, so it would fail to load at query time
+      # and the sparse half of hybrid search would silently return nothing.
+      # `make fetch-models` populates this path.
+      FASTEMBED_CACHE_PATH: /hf/fastembed
+    volumes:
+      - ${HF_CACHE_DIR:-~/.cache/huggingface}:/hf
+      # Bind-mounted for live reload during development. The Dockerfile
+      # also COPYs it, so the image stands alone in production.
+      - ./services/rag/app:/srv/app:ro
+      # Mounted for the same reason as app/: `make test` runs pytest inside
+      # this container, and without this it runs whatever was baked into the
+      # image at build time rather than the tests you just edited.
+      - ./services/rag/tests:/srv/tests:ro
+      - ./eval:/srv/eval:ro
+      # The one writable path this service has. It holds the shutdown flag
+      # and nothing else — the container asks the host to stop the stack by
+      # leaving a file here, rather than being given the Docker socket.
+      - ./data/runtime:/runtime
+    ports:
+      - "127.0.0.1:8080:8080"
+    networks: [backend, frontend]
+    depends_on:
+      vllm: {condition: service_healthy}
+      qdrant: {condition: service_healthy}
+      postgres: {condition: service_healthy}
+    logging: *default-logging
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8080/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      start_period: 120s
+      retries: 5
+
+  # ---------------------------------------------------------------
+  # Text to speech. Open WebUI's default "Read Aloud" uses the
+  # browser's SpeechSynthesis API, which is the robotic voice — that
+  # comes from the OS and no amount of configuration improves it. The
+  # fix is a real neural engine behind an OpenAI-compatible
+  # /v1/audio/speech, which Open WebUI supports natively.
+  #
+  # Kokoro-82M: small enough to run on CPU (the GPU is entirely spoken
+  # for by the 27B), Apache-2.0, and markedly more natural than Piper
+  # or the browser. Runs on the backend network — audio of these
+  # conversations has no more business leaving the machine than the
+  # text does.
+  # ---------------------------------------------------------------
+  tts:
+    image: ghcr.io/remsky/kokoro-fastapi-cpu:${KOKORO_VERSION:-latest}
+    container_name: ta-tts
+    restart: unless-stopped
+    environment:
+      # Kokoro bundles its weights in the image, so this never reaches
+      # for the network at runtime.
+      PYTHONUNBUFFERED: "1"
+    networks: [backend]
+    logging: *default-logging
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request;urllib.request.urlopen('http://localhost:8880/v1/audio/voices')\" || exit 1"]
+      interval: 20s
+      timeout: 10s
+      start_period: 120s
+      retries: 5
+
+  # ---------------------------------------------------------------
+  # Frontend. Talks only to the rag service — never to vllm directly.
+  # Telemetry is off and it is pinned offline.
+  # ---------------------------------------------------------------
+  open-webui:
+    image: ghcr.io/open-webui/open-webui:${OPENWEBUI_VERSION:-main}
+    container_name: ta-webui
+    restart: unless-stopped
+    environment:
+      OPENAI_API_BASE_URL: http://rag:8080/v1
+      OPENAI_API_KEY: ${RAG_API_KEY:-local}
+      ENABLE_OLLAMA_API: "false"
+      # Open WebUI ships its own RAG. Ours is better-targeted and lives
+      # in the rag service, so turn theirs off to avoid two competing
+      # retrieval layers silently fighting each other.
+      ENABLE_RAG_WEB_SEARCH: "false"
+      RAG_EMBEDDING_ENGINE: ""
+      WEBUI_NAME: ${WEBUI_NAME:-Therapist}
+      WEBUI_AUTH: "true"
+      WEBUI_SECRET_KEY: ${WEBUI_SECRET_KEY:?set WEBUI_SECRET_KEY in .env}
+      DATABASE_URL: postgresql://${POSTGRES_USER:-therapist}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-therapist}
+      # Read Aloud. Open WebUI fetches the audio server-side, so this is a
+      # container-to-container URL on the backend network, and the API key
+      # is a placeholder Kokoro ignores.
+      AUDIO_TTS_ENGINE: openai
+      AUDIO_TTS_OPENAI_API_BASE_URL: http://tts:8880/v1
+      AUDIO_TTS_OPENAI_API_KEY: not-needed
+      AUDIO_TTS_MODEL: ${TTS_MODEL:-kokoro}
+      AUDIO_TTS_VOICE: ${TTS_VOICE:-af_heart}
+      # Kokoro defaults response_format to pcm when the field is absent and
+      # Open WebUI does not send it; the browser cannot play raw PCM.
+      AUDIO_TTS_OPENAI_PARAMS: '{"response_format":"mp3"}'
+      ANONYMIZED_TELEMETRY: "false"
+      DO_NOT_TRACK: "true"
+      SCARF_NO_ANALYTICS: "true"
+      HF_HUB_OFFLINE: "1"
+    volumes:
+      - webui-data:/app/backend/data
+      # The backdrop, and the stylesheet that keeps text legible over it.
+      # Open WebUI serves /app/build/static as /static, and ships an empty
+      # custom.css it links from index.html — so both of these are the
+      # app's own extension points rather than an override that a version
+      # bump will quietly undo.
+      - ./infra/webui/backdrop.webp:/app/build/static/backdrop.webp:ro
+      - ./infra/webui/custom.css:/app/build/static/custom.css:ro
+    ports:
+      - "127.0.0.1:3000:8080"
+    networks: [frontend, backend]
+    depends_on:
+      rag: {condition: service_started}
+      postgres: {condition: service_healthy}
+      tts: {condition: service_started}
+    logging: *default-logging
+
+networks:
+  backend:
+    driver: bridge
+    # No gateway. Conversation content is structurally incapable of
+    # leaving this machine. Verify with: make verify-isolation
+    internal: true
+  frontend:
+    driver: bridge
+
+volumes:
+  vllm-cache:
+  # Named volumes, not bind mounts. They live inside the WSL2 VM disk,
+  # so they avoid the 9p filesystem penalty that would otherwise make
+  # corpus ingestion painfully slow.
+  qdrant-data:
+  postgres-data:
+  webui-data:

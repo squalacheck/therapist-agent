@@ -1,0 +1,71 @@
+####################################################################
+# Corpus ingestion — run on demand, never as part of `make up`.
+#
+#   make ingest        harvest + parse + chunk + embed + index
+#   make ingest-dry    harvest metadata only, no downloads
+#   make reindex       re-embed and re-index what is already on disk
+#
+# This is the ONLY container with internet access. It is deliberately
+# on its own network and never joins `backend`, so the machinery that
+# reaches out to the world never shares a network with the machinery
+# that holds your conversations.
+#
+# Embedding during ingestion wants the whole GPU. Stop vllm first:
+#   make down-vllm && make ingest && make up
+####################################################################
+
+name: therapist-agent
+
+services:
+  ingest:
+    build:
+      context: ./services/ingest
+    image: therapist-agent/ingest:latest
+    container_name: ta-ingest
+    profiles: ["ingest"]
+    env_file: .env
+    environment:
+      QDRANT_URL: http://qdrant:6333
+      QDRANT_COLLECTION: ${QDRANT_COLLECTION:-corpus}
+      EMBED_MODEL: ${EMBED_MODEL:-Qwen/Qwen3-Embedding-0.6B}
+      # INGEST_EMBED_DEVICE, not EMBED_DEVICE. `${EMBED_DEVICE:-cuda}` only
+      # falls back to cuda when the variable is UNSET — and .env sets it to
+      # cpu on purpose, because at query time the embedder cannot fit on the
+      # card next to the 27B model. So ingestion silently inherited cpu and
+      # embedded 29,685 chunks at 600% CPU with the GPU idle at 7%, which is
+      # the one job the GPU was freed for. Separate name, no shadowing.
+      EMBED_DEVICE: ${INGEST_EMBED_DEVICE:-cuda}
+      EMBED_BATCH_SIZE: ${EMBED_BATCH_SIZE:-32}
+      # Same flag vLLM runs with, for the same reason. Chunk batches vary in
+      # length, so the caching allocator carves the card into differently
+      # sized blocks and reserved memory climbs toward the ceiling over a
+      # long run even though live tensors stay small. A run that gets there
+      # stops making progress rather than failing cleanly.
+      PYTORCH_CUDA_ALLOC_CONF: expandable_segments:True
+      # NCBI raises your rate limit from 3/s to 10/s if you register a
+      # key. Optional, but the harvest is much faster with one.
+      NCBI_API_KEY: ${NCBI_API_KEY:-}
+      # NCBI asks that automated clients identify themselves.
+      CONTACT_EMAIL: ${CONTACT_EMAIL:?set CONTACT_EMAIL in .env}
+      HF_HOME: /hf
+      FASTEMBED_CACHE_PATH: /hf/fastembed
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    volumes:
+      - ${HF_CACHE_DIR:-~/.cache/huggingface}:/hf
+      - ./services/ingest:/srv:ro
+      - ./data:/data
+    networks: [egress, backend]
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+
+networks:
+  egress:
+    driver: bridge
+  backend:
+    external: true
+    name: therapist-agent_backend

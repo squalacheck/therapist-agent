@@ -1,0 +1,207 @@
+####################################################################
+# Corpus definition.
+#
+# Everything here is open access or public domain. Paywalled journal
+# articles are deliberately not fetched — for non-OA hits the pipeline
+# keeps title, abstract and DOI, flagged full_text: false, so the agent
+# can point you at a paper it cannot quote.
+#
+# Edit the queries, re-run `make ingest`. Harvesting is idempotent and
+# keyed on DOI/PMCID, so re-running only picks up what is new.
+####################################################################
+
+defaults:
+  # Per query, per source. Raise once you have seen the quality.
+  max_results: 60
+  min_year: 1990
+  # Chunking. Section-aware, so these are ceilings rather than targets.
+  chunk_tokens: 800
+  chunk_overlap: 0.15
+
+sources:
+
+  # ── PubMed Central open-access subset ────────────────────────────
+  # Primary source. JATS XML gives real section structure, which is far
+  # better than anything PDF extraction produces.
+  - name: pmc
+    type: pmc
+    enabled: true
+    license_filter: [cc-by, cc-by-sa, cc-by-nc, cc0, public-domain]
+    queries:
+      # ── Gottman and couples process research ─────────────────────
+      # Tags describe what a document IS ABOUT, not what it is adjacent
+      # to. The first pass tagged every longitudinal marriage study
+      # `gottman` and every coercive-control paper `darvo`, which gave
+      # 57% and 4% tag precision respectively — a `darvo` filter returned
+      # 211 documents of which 9 mentioned DARVO. Related concepts get
+      # their own tags now.
+      #
+      # Worth knowing: Gottman's foundational papers (Gottman & Levenson
+      # 1992/2000/2002, JPSP and Journal of Marriage and Family) predate
+      # open access and are NOT in the PMC OA subset. No query reaches
+      # them. They have to come in through data/raw/dropfolder/.
+      - terms: '"Gottman"[All Fields]'
+        tags: [gottman, couples]
+      - terms: '"four horsemen"[All Fields] AND ("marriage" OR "marital" OR "couple")'
+        tags: [gottman, conflict]
+      - terms: '"contempt"[Title] AND ("marriage" OR "marital" OR "couple")'
+        tags: [conflict, couples]
+      - terms: '("repair attempt"[All Fields] OR "bids for connection"[All Fields] OR "emotional flooding"[All Fields]) AND "couple"'
+        tags: [conflict, couples]
+      - terms: '"couples therapy"[Title/Abstract] AND ("outcome" OR "efficacy" OR "randomized")'
+        tags: [couples, outcomes]
+      - terms: '"marital satisfaction"[Title/Abstract] AND "longitudinal"[Title/Abstract]'
+        tags: [couples, longitudinal]
+      - terms: '"demand-withdraw"[Title/Abstract] OR ("conflict resolution"[Title] AND "couple")'
+        tags: [couples, conflict]
+
+      # ── Emotionally focused therapy and attachment ───────────────
+      - terms: '"emotionally focused therapy"[Title/Abstract]'
+        tags: [eft, couples]
+      - terms: '"adult attachment"[Title/Abstract] AND ("romantic" OR "couple" OR "partner")'
+        tags: [attachment]
+      - terms: '"attachment style"[Title/Abstract] AND "relationship satisfaction"[Title/Abstract]'
+        tags: [attachment, couples]
+
+      # ── Trauma ───────────────────────────────────────────────────
+      - terms: '"complex PTSD"[Title/Abstract] OR "complex post-traumatic"[Title/Abstract]'
+        tags: [trauma, complex-ptsd]
+      - terms: '"trauma-informed care"[Title/Abstract]'
+        tags: [trauma, clinical-guide]
+      - terms: '"posttraumatic stress"[Title/Abstract] AND ("psychotherapy" OR "treatment outcome")'
+        tags: [trauma, outcomes]
+      - terms: '"EMDR"[Title/Abstract] OR "prolonged exposure"[Title/Abstract] OR "cognitive processing therapy"[Title/Abstract]'
+        tags: [trauma, modality]
+      - terms: '"window of tolerance"[All Fields] OR "emotional dysregulation"[Title/Abstract] AND "trauma"'
+        tags: [trauma, regulation]
+
+      # ── DARVO and betrayal trauma — kept narrow on purpose ───────
+      # These are the queries whose results earn the `darvo` tag. Freyd
+      # is named directly because DARVO's empirical literature is small
+      # and almost entirely hers and her students'.
+      - terms: '"DARVO"[All Fields] OR ("deny attack reverse victim"[All Fields])'
+        tags: [darvo]
+      - terms: 'Freyd JJ[Author] OR "betrayal trauma"[All Fields]'
+        tags: [betrayal-trauma]
+      - terms: '"institutional betrayal"[All Fields]'
+        tags: [betrayal-trauma]
+
+      # ── Coercive control and IPV — related to DARVO, not the same ─
+      - terms: '"coercive control"[Title/Abstract]'
+        tags: [coercive-control, ipv]
+      - terms: '"intimate partner violence"[Title/Abstract] AND ("psychological" OR "pattern" OR "recognition")'
+        tags: [ipv]
+      - terms: '"gaslighting"[Title/Abstract] OR "psychological abuse"[Title/Abstract]'
+        tags: [psych-abuse, ipv]
+
+      # ── Skills-based modalities ──────────────────────────────────
+      - terms: '"dialectical behavior therapy"[Title/Abstract] AND ("emotion regulation" OR "distress tolerance")'
+        tags: [dbt, skills]
+      - terms: '"cognitive behavioral therapy"[Title/Abstract] AND ("relationship" OR "couple" OR "interpersonal")'
+        tags: [cbt, skills]
+      - terms: '"internal family systems"[Title/Abstract] OR "parts work"[Title/Abstract]'
+        tags: [ifs]
+      - terms: '"acceptance and commitment therapy"[Title/Abstract] AND "relationship"'
+        tags: [act, skills]
+
+      # ── Process and common factors ───────────────────────────────
+      - terms: '"therapeutic alliance"[Title/Abstract] AND "outcome"[Title/Abstract]'
+        tags: [process]
+      - terms: '"common factors"[Title/Abstract] AND "psychotherapy"[Title/Abstract]'
+        tags: [process]
+
+  # ── Europe PMC ───────────────────────────────────────────────────
+  # Overlaps PMC heavily but catches European journals it misses.
+  # Dedup is by DOI, so overlap costs nothing but time.
+  - name: europepmc
+    type: europepmc
+    enabled: true
+    queries:
+      - terms: '(TITLE:"couple therapy" OR TITLE:"couples therapy") AND OPEN_ACCESS:y'
+        tags: [couples]
+      - terms: 'ABSTRACT:"coercive control" AND OPEN_ACCESS:y'
+        tags: [coercive-control, ipv]
+      - terms: 'ABSTRACT:"attachment style" AND ABSTRACT:"relationship satisfaction" AND OPEN_ACCESS:y'
+        tags: [attachment]
+      - terms: 'ABSTRACT:"DARVO" AND OPEN_ACCESS:y'
+        tags: [darvo]
+      - terms: 'ABSTRACT:"betrayal trauma" AND OPEN_ACCESS:y'
+        tags: [betrayal-trauma]
+
+  # ── OSF Preprints / PsyArXiv ─────────────────────────────────────
+  # Where a lot of the current relationship and trauma work lands first.
+  - name: psyarxiv
+    type: osf
+    enabled: true
+    provider: psyarxiv
+    queries:
+      - terms: 'couples therapy'
+        tags: [couples]
+      - terms: 'DARVO'
+        tags: [darvo]
+      - terms: 'coercive control'
+        tags: [coercive-control, ipv]
+      - terms: 'attachment romantic relationships'
+        tags: [attachment]
+      - terms: 'complex trauma treatment'
+        tags: [trauma]
+
+  # ── DOAJ ─────────────────────────────────────────────────────────
+  - name: doaj
+    type: doaj
+    enabled: true
+    queries:
+      - terms: 'couples therapy outcome'
+        tags: [couples, outcomes]
+      - terms: 'trauma informed practice'
+        tags: [trauma]
+
+  # ── Public domain government and agency material ─────────────────
+  # Unusually high value: authoritative, comprehensive, book-length, and
+  # unambiguously free to use. The SAMHSA TIP volumes in particular are
+  # better structured than most of the journal literature.
+  - name: gov
+    type: direct
+    enabled: true
+    license: public-domain
+    documents:
+      - url: https://library.samhsa.gov/sites/default/files/sma14-4816.pdf
+        title: "TIP 57: Trauma-Informed Care in Behavioral Health Services"
+        publisher: SAMHSA
+        year: 2014
+        tags: [trauma, clinical-guide]
+      - url: https://www.ptsd.va.gov/publications/print/ptsdoverview_professional.pdf
+        title: "Understanding PTSD: A Guide for Professionals"
+        publisher: VA National Center for PTSD
+        tags: [trauma, clinical-guide]
+      - url: https://www.cdc.gov/intimate-partner-violence/media/pdfs/ipv-technical-package.pdf
+        title: "Intimate Partner Violence Prevention Resource for Action"
+        publisher: CDC
+        tags: [ipv, prevention]
+
+  # ── Openly posted primary sources ────────────────────────────────
+  # Publicly hosted by the authors or their institutions.
+  - name: openly_posted
+    type: direct
+    enabled: true
+    license: publisher-posted
+    documents:
+      - url: https://www.gottman.com/wp-content/uploads/EmpiricalBasis-Update3.pdf
+        title: "The Empirical Basis for Gottman Method Couples Therapy"
+        publisher: The Gottman Institute
+        tags: [gottman, couples]
+      - url: https://www.johngottman.net/wp-content/uploads/2011/05/Empirical-Basis-for-Gottman-Method-Therapy-May2013.pdf
+        title: "Empirical Status and Basis of Gottman Method Couples Therapy"
+        publisher: johngottman.net
+        tags: [gottman, couples]
+
+  # ── Your own material ────────────────────────────────────────────
+  # Anything dropped in data/raw/dropfolder/ gets ingested. Wired up but
+  # empty by default — this is where material you legitimately have
+  # access to would go.
+  - name: dropfolder
+    type: dropfolder
+    enabled: true
+    path: /data/raw/dropfolder
+    license: local
+    tags: [local]

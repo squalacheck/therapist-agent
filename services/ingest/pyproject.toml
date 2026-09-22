@@ -1,0 +1,21 @@
+[project]
+name = "therapist-ingest"
+version = "0.1.0"
+description = "Open-access corpus harvesting, parsing, chunking and indexing."
+requires-python = ">=3.12"
+
+dependencies = [
+    "httpx>=0.27",
+    "pyyaml>=6.0",
+    "structlog>=24.4",
+    "qdrant-client>=1.12",
+    "sentence-transformers>=5.4",
+    "torch>=2.5",
+    "fastembed>=0.5",
+    "pymupdf>=1.24",
+]
+
+[project.optional-dependencies]
+# OCR is only needed for scanned PDFs, which are rare in this corpus.
+# Kept optional so the image stays small: pip install -e '.[ocr]'
+ocr = ["paddleocr>=2.9", "paddlepaddle>=2.6"]

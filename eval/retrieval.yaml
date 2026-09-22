@@ -1,0 +1,115 @@
+# Retrieval eval.
+#
+# Each case is a question plus terms that MUST appear in the retrieved
+# passages for the retrieval to count as a hit. Term matching rather than
+# document matching, because which specific paper answers a question depends
+# on what your harvest happened to pull, and pinning to DOIs would make this
+# file go stale the first time you widen the manifest.
+#
+# `make eval-retrieval` reports recall@8 with and without the reranker. The
+# delta between them is the number that tells you whether the reranker is
+# earning its VRAM.
+#
+# Add cases as you find questions the agent answers badly. This file is the
+# regression suite for the corpus.
+
+cases:
+  - id: gottman-horsemen
+    question: What are the Four Horsemen and how well do they predict divorce?
+    must_match_any: [contempt, criticism, defensiveness, stonewalling]
+    tags: [gottman]
+
+  - id: gottman-contempt
+    question: Is contempt the single strongest predictor of relationship dissolution?
+    must_match_any: [contempt, predictor, dissolution, divorce]
+    tags: [gottman]
+
+  - id: gottman-repair
+    question: What does the research say about repair attempts during conflict?
+    must_match_any: [repair, de-escalat, conflict]
+    tags: [gottman]
+
+  - id: perpetual-problems
+    question: What is the difference between solvable and perpetual problems in a relationship?
+    must_match_any: [perpetual, solvable, gridlock]
+    tags: [gottman]
+
+  - id: demand-withdraw
+    question: Why does one partner pursue while the other withdraws during conflict?
+    must_match_any: [demand-withdraw, pursu, withdraw]
+    tags: [couples, eft]
+
+  - id: eft-evidence
+    question: How strong is the evidence base for emotionally focused therapy with couples?
+    must_match_any: [emotionally focused, EFT, efficacy]
+    tags: [eft]
+
+  - id: attachment-adult
+    question: How does adult attachment style affect conflict in romantic relationships?
+    must_match_any: [attachment, anxious, avoidant]
+    tags: [attachment]
+
+  - id: darvo-definition
+    question: What is DARVO and what evidence supports it as a real pattern?
+    must_match_any: [DARVO, reverse victim, perpetrator]
+    tags: [darvo]
+
+  - id: darvo-effects
+    question: What effect does DARVO have on the person it is directed at?
+    must_match_any: [DARVO, self-blame, betrayal]
+    tags: [darvo]
+
+  - id: coercive-control
+    question: How is coercive control distinguished from ordinary relationship conflict?
+    must_match_any: [coercive control, isolation, monitoring]
+    tags: [ipv]
+
+  - id: betrayal-trauma
+    question: What is betrayal trauma theory?
+    must_match_any: [betrayal trauma, Freyd, institutional betrayal]
+    tags: [trauma, darvo]
+
+  - id: cptsd
+    question: How does complex PTSD differ from PTSD?
+    must_match_any: [complex, ICD-11, disturbances in self-organization, DSO]
+    tags: [trauma]
+
+  - id: trauma-informed
+    question: What are the core principles of trauma-informed care?
+    must_match_any: [trauma-informed, safety, trustworthiness, empowerment]
+    tags: [trauma]
+
+  - id: ptsd-treatments
+    question: Which PTSD treatments have the strongest evidence?
+    must_match_any: [prolonged exposure, cognitive processing, EMDR]
+    tags: [trauma, outcomes]
+
+  - id: window-of-tolerance
+    question: What is the window of tolerance and how does it relate to dysregulation?
+    must_match_any: [arousal, dysregulat, hyperarousal]
+    tags: [trauma]
+
+  - id: dbt-distress
+    question: What distress tolerance skills does DBT teach?
+    must_match_any: [distress tolerance, DBT, dialectical]
+    tags: [dbt]
+
+  - id: emotion-regulation
+    question: What does the research say about emotion regulation strategies in conflict?
+    must_match_any: [emotion regulation, reappraisal, suppression]
+    tags: [dbt, skills]
+
+  - id: alliance-outcome
+    question: How much does the therapeutic alliance predict therapy outcome?
+    must_match_any: [alliance, outcome, meta-analy]
+    tags: [process]
+
+  - id: ifs-parts
+    question: What is the evidence base for internal family systems therapy?
+    must_match_any: [internal family systems, IFS, parts]
+    tags: [ifs]
+
+  - id: infidelity
+    question: What does the research say about recovering from infidelity in a relationship?
+    must_match_any: [infidelity, affair, forgiveness]
+    tags: [couples]

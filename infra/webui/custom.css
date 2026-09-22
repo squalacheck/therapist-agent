@@ -1,0 +1,95 @@
+/* Therapist — frontend touches that Open WebUI has no setting for.
+ *
+ * Served at /static/custom.css, which index.html links itself. That link is
+ * the app's own extension point, so this survives a version bump in a way
+ * that patching the built JS would not.
+ *
+ * The chat backdrop is NOT set here. Open WebUI has a real setting for that
+ * (Settings -> Interface -> Background Image), stored per user, and
+ * `make backdrop` writes it. Doing it in both places would mean two things
+ * to change and one of them silently winning.
+ *
+ * What is left for this file is the sign-in page, which that setting cannot
+ * reach because nobody is signed in yet. It used to carry a painted
+ * landscape and now renders flat white — this puts it back, from the same
+ * image file as the chat backdrop so the two cannot drift apart.
+ *
+ * EDITING THIS FILE: truncate it, do not replace it. `cat > custom.css`
+ * is fine; anything that writes a temp file and renames it (most editors,
+ * sed -i) swaps the inode, and Docker Desktop binds single files by inode.
+ * The mount then points at nothing and the container will not even start:
+ *   "error mounting ... no such file or directory".
+ * If that happens: make frontend-reload.
+ *
+ * Selectors are ids Open WebUI assigns deliberately (#auth-page,
+ * #auth-login-card), not generated class names. If a future version drops
+ * them these rules stop applying and the page renders as it does today:
+ * plain, and working.
+ */
+
+/* The full-bleed layer behind the sign-in form. This element exists only to
+ * paint the page's flat background colour, so replacing it costs nothing. */
+#auth-page > div:first-of-type {
+  background-image: url("/static/backdrop.webp");
+  background-size: cover;
+  background-position: center center;
+  background-repeat: no-repeat;
+}
+
+/* A panel behind the form. Without it the labels sit directly on the
+ * painting's bright sky: the image is doing a decorative job and must not
+ * cost legibility to do it. */
+#auth-login-card {
+  background: rgba(255, 255, 255, 0.93);
+  -webkit-backdrop-filter: blur(12px);
+  backdrop-filter: blur(12px);
+  border-radius: 18px;
+  padding: 2.25rem 2rem 2rem;
+  box-shadow: 0 14px 44px rgba(20, 30, 45, 0.32);
+}
+
+#auth-login-card.pb-10 {
+  padding-bottom: 2rem;
+}
+
+/* The inputs are borderless by default, which works on a flat page and
+ * disappears on a frosted one — the fields stop looking like fields. */
+#auth-login-card input {
+  background: rgba(255, 255, 255, 0.9);
+  border: 1px solid rgba(20, 30, 45, 0.18);
+  border-radius: 10px;
+  padding: 0.55rem 0.7rem;
+}
+
+#auth-login-card input:focus {
+  outline: none;
+  border-color: rgba(20, 30, 45, 0.45);
+  background: #fff;
+}
+
+#auth-login-card button[type="submit"] {
+  background: rgba(20, 30, 45, 0.92);
+  color: #fff;
+  border-radius: 10px;
+}
+
+html.dark #auth-login-card {
+  background: rgba(18, 20, 24, 0.88);
+  box-shadow: 0 14px 44px rgba(0, 0, 0, 0.6);
+}
+
+html.dark #auth-login-card input {
+  background: rgba(255, 255, 255, 0.08);
+  border-color: rgba(255, 255, 255, 0.22);
+  color: #f3f4f6;
+}
+
+html.dark #auth-login-card input:focus {
+  background: rgba(255, 255, 255, 0.14);
+  border-color: rgba(255, 255, 255, 0.45);
+}
+
+html.dark #auth-login-card button[type="submit"] {
+  background: rgba(245, 246, 248, 0.94);
+  color: #14181f;
+}
