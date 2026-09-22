@@ -383,3 +383,108 @@ def test_first_meeting_is_announced_only_when_nothing_is_remembered():
 
     known = _assemble(history, [], [], SafetyVerdict(), profile="Goes by Sam.")[0]["content"]
     assert "meeting this person for the first time" not in known
+
+
+# ── Session feedback ───────────────────────────────────────────────
+
+
+def test_feedback_parses_the_ways_people_actually_answer():
+    from app.feedback import parse
+
+    assert parse("8 7 9 8") == {"status": "rated", "heard": 8, "focus": 7, "approach": 9,
+                                "overall": 8, "comment": ""}
+    got = parse("8, 7, 10, 6 — felt a bit rushed at the end")
+    assert (got["approach"], got["overall"]) == (10, 6)
+    assert got["comment"] == "felt a bit rushed at the end"
+    assert parse("7/10 8/10 8/10 9/10")["heard"] == 7
+    assert parse("9") == {"status": "rated", "overall": 9, "comment": ""}
+    assert parse("6 - good but I wanted more practical stuff")["comment"].startswith("good")
+    for skip in ("skip", "Skip.", "no thanks", "not now", "pass"):
+        assert parse(skip) == {"status": "skipped"}, skip
+
+
+def test_feedback_does_not_mistake_conversation_for_a_score():
+    """A pending request lapses when they keep talking. Reading "3 things
+    happened today" as a rating of 3 would record a score they never gave
+    and shut the machine down on them mid-thought."""
+    from app.feedback import parse
+
+    for text in (
+        "3 things happened today that I want to tell you about",
+        "actually wait, one more thing before we stop",
+        "10 years ago this would never have bothered me",
+        "no, I think it was more that I felt unheard",
+    ):
+        assert parse(text) is None, text
+
+
+def test_feedback_note_only_when_something_went_badly():
+    from app.feedback import prompt_block
+
+    assert prompt_block(None) == ""
+    assert prompt_block({"heard": 9, "focus": 8, "approach": 9, "overall": 9, "comment": ""}) == ""
+
+    note = prompt_block({"heard": 4, "focus": 8, "approach": 9, "overall": 7, "comment": ""})
+    assert "heard 4/10" in note and "Slow down" in note
+    assert "Ask, once and plainly" not in note, "only the low items get advice"
+
+    note = prompt_block({"heard": 9, "focus": 9, "approach": 9, "overall": 9,
+                         "comment": "too much theory"})
+    assert "too much theory" in note, "a comment is worth carrying even with high scores"
+
+
+def test_feedback_ask_lists_all_four_questions():
+    from app.feedback import ITEMS, ask
+
+    text = ask({"exchanges": 6})
+    assert "6 exchanges saved" in text
+    assert all(q in text for _, q in ITEMS)
+    assert "skip" in text
+
+
+def test_last_session_feedback_reaches_the_prompt():
+    from app.pipeline import _assemble
+    from app.schemas import SafetyVerdict
+
+    history = [ChatMessage(role="user", content="hi")]
+    note = "## How the last conversation landed\n\nheard 4/10"
+    assert note in _assemble(history, [], [], SafetyVerdict(), feedback_note=note)[0]["content"]
+
+
+# ── Quality eval rules ─────────────────────────────────────────────
+
+
+def test_quality_rules_catch_what_the_system_prompt_forbids():
+    from app.eval.quality import check_rules
+
+    rules = {"max_questions": 1, "max_words": 350, "allow_list": False}
+    good = "That sounds exhausting. What happened right before it started?"
+    assert all(v["pass"] for v in check_rules(good, rules).values())
+
+    bad = (
+        "## What I notice\n\nI hear that you're feeling frustrated.\n\n---\n\n"
+        "- Try this\n- And this\n\nDoes that help? Or would something else?"
+    )
+    r = check_rules(bad, rules)
+    assert not r["no_headers"]["pass"] and not r["no_rules"]["pass"]
+    assert not r["no_lists"]["pass"] and not r["no_reflex"]["pass"]
+    assert not r["questions"]["pass"]
+    assert check_rules(bad, {**rules, "allow_list": True})["no_lists"]["pass"]
+
+
+def test_quality_scenarios_are_well_formed():
+    """Every criterion a scenario asks for must be defined, or the judge is
+    asked about something it has no definition for and fails it silently."""
+    from pathlib import Path
+
+    import yaml
+
+    spec = yaml.safe_load(Path("/srv/eval/quality.yaml").read_text())
+    ids = [s["id"] for s in spec["scenarios"]]
+    assert len(ids) == len(set(ids)), "scenario ids must be unique"
+    for s in spec["scenarios"]:
+        assert s["criteria"], s["id"]
+        missing = set(s["criteria"]) - set(spec["criteria"])
+        assert not missing, f"{s['id']} uses undefined criteria {missing}"
+        if "names_frame" in s["criteria"]:
+            assert s.get("frame"), f"{s['id']} judges names_frame without saying which frame"

@@ -102,6 +102,11 @@ class Settings(BaseSettings):
     # it. Deliberately NOT the Docker socket — see session._request_shutdown.
     shutdown_on_end: bool = True
     shutdown_flag_path: str = "/runtime/shutdown-requested"
+    # Ask how the session was, four scores out of 10, before closing down.
+    # Only after a real conversation: asking someone to rate two lines is
+    # noise. See feedback.py.
+    feedback_enabled: bool = True
+    feedback_min_exchanges: int = 3
 
     # ── Safety ─────────────────────────────────────────────────────
     safety_enabled: bool = True

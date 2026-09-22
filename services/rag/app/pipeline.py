@@ -22,7 +22,7 @@ from datetime import datetime
 
 import structlog
 
-from . import daily, memory, retrieval, safety, session
+from . import daily, feedback, memory, retrieval, safety, session
 from .config import get_settings, load_prompt
 from .llm import get_llm
 from .schemas import ChatMessage, Passage, SafetyVerdict
@@ -83,6 +83,7 @@ def _assemble(
     commitments: list[dict] | None = None,
     now_block: str = "",
     first_meeting: bool = False,
+    feedback_note: str = "",
 ) -> list[dict[str, str]]:
     system_parts = [load_prompt("system")]
 
@@ -115,6 +116,12 @@ def _assemble(
             "not open by summarising it, and treat anything they say now as more "
             "current than anything written here.\n\n" + profile
         )
+
+    # How they rated the last conversation — only present when it went
+    # badly somewhere. After the notes, so it reads as "and here is what to
+    # do better with this person", not as the first thing about them.
+    if feedback_note:
+        system_parts.append(feedback_note)
 
     if facts:
         system_parts.append(
@@ -182,6 +189,10 @@ async def run(
     if s.memory_enabled and s.profile_enabled and remember:
         profile = await memory.get_profile(scope)
 
+    feedback_note = ""
+    if feedback.enabled_for(remember):
+        feedback_note = feedback.prompt_block(await feedback.latest(scope))
+
     # What is still open on today's practice list. Cheap, and it is the
     # thing that makes the two halves of this one tool: without it you can
     # commit to something in the morning list and then talk for an hour to
@@ -210,6 +221,7 @@ async def run(
     prompt = _assemble(
         history, passages, facts, verdict, profile, phase, commitments, now_block,
         first_meeting=first_meeting,
+        feedback_note=feedback_note,
     )
 
     if remember:
@@ -229,6 +241,7 @@ async def run(
         commitments=len(commitments),
         phase=phase or None,
         first_meeting=first_meeting,
+        feedback_note=bool(feedback_note),
         since_last=session.describe_gap(previous, datetime.now().astimezone())[0] or None,
         remembering=remember,
         safety=verdict.category if verdict.triggered else None,

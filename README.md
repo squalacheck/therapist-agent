@@ -61,7 +61,12 @@ Everything lives in local Docker volumes on your machine:
   lists), keeping the research library. The next start is a first meeting.
 - `make nuke` — remove everything, including the library and images.
 - Say **"let's end for now"** in a chat to save and close the session.
-  With `make watch` running, that also stops the stack and frees the GPU.
+  After a real conversation it first asks four quick questions, scored out
+  of 10 — did you feel heard, did it work on what you wanted, did its
+  approach fit, was it worth your time. Answer like `8 7 9 8`, or say
+  **skip**. A low score quietly changes how it goes about the next
+  conversation; `make feedback` shows the history. With `make watch`
+  running, it then stops the stack and frees the GPU.
 
 Network access happens only during install and `make ingest`: downloading
 software, model weights and open-access papers. When building the library,
@@ -74,6 +79,7 @@ never anything from your conversations.
 make up / make down     start and stop
 make logs-vllm          watch the model load (a few minutes from cold)
 make today              today's practice list
+make feedback           how your sessions have been rated
 make set-voice V=bf_emma   change the Read Aloud voice (make voices lists them)
 make backdrop           the painted chat background
 make help               everything else
@@ -100,6 +106,23 @@ person's side, no diagnosing, prose not bullet points — is in
 `docs/REBUILD_PROMPT.md` is the full design specification with the reasons
 behind each decision. `docs/gpu-notes.md` explains the GPU settings; several
 of them look like tuning and are not.
+
+## Measuring whether it is any good
+
+`make eval-quality` puts it through 20 invented scenarios — first
+meetings, one-sided accounts, "is he a narcissist?", a request for advice
+too early, trauma disclosure, crisis — and scores every reply. Format and
+style rules are checked in code (one question at a time, no headers or
+bullet lists, no scripted empathy); the harder things (did it explore
+before fixing, did it avoid taking sides, did it name the right framework,
+was it honest about the evidence) are judged by the model against written
+definitions in `eval/quality.yaml`. Each run is saved and compared with the
+last, so a change to a prompt shows up as a score going up or down. Nothing
+is remembered while it runs.
+
+The judge is the same model that wrote the replies, and models are lenient
+with themselves: treat it as an alarm for changes that make things worse,
+not as a grade.
 
 ## Known limits
 

@@ -266,7 +266,9 @@ async def session_summary(scope: str, hours: int = 12) -> dict:
         return {"exchanges": 0, "started": None}
 
 
-async def close_out(messages: list[ChatMessage], scope: str) -> dict:
+async def close_out(
+    messages: list[ChatMessage], scope: str, *, defer_shutdown: bool = False
+) -> dict:
     """Finish the session properly, then ask the host to stop the stack.
 
     Order is the whole point. Everything durable is written and awaited
@@ -297,9 +299,10 @@ async def close_out(messages: list[ChatMessage], scope: str) -> dict:
 
     await log_turn(scope, "system", "session ended by request")
 
-    shutdown_requested = False
-    if s.shutdown_on_end:
-        shutdown_requested = _request_shutdown()
+    # Deferred when the close-out is about to ask for feedback: the stack
+    # going down before they can answer would make the question pointless.
+    # The caller requests it once they have replied (request_shutdown()).
+    shutdown_requested = False if defer_shutdown else request_shutdown()
 
     log.info(
         "session.closed",
@@ -308,6 +311,11 @@ async def close_out(messages: list[ChatMessage], scope: str) -> dict:
         scope=scope,
     )
     return {**summary, "shutdown_requested": shutdown_requested}
+
+
+def request_shutdown() -> bool:
+    """Stop the stack if this install is set to, and say whether it will."""
+    return _request_shutdown() if get_settings().shutdown_on_end else False
 
 
 def _request_shutdown() -> bool:

@@ -12,7 +12,7 @@ GPU_GUARD      := ./infra/scripts/gpu-guard.sh
         today today-new backdrop backdrop-off frontend-reload \
         watch end prompts \
         shell-rag shell-ingest psql \
-        test eval eval-retrieval eval-safety \
+        test eval eval-retrieval eval-safety eval-quality feedback \
         verify verify-isolation verify-model clean nuke
 
 help: ## Show this help
@@ -170,6 +170,13 @@ print(); print('  '+p['date'], '—', p.get('intro','')); print(); \
 [print(f\"  {'x' if i['status']=='done' else ' ' if i['status']=='open' else '-'}  {i['title']}\n     {i['detail']}\n\") for i in p['items']]" \
 		|| echo "  no plan, and the agent could not make one — is the model up?"
 
+feedback: ## How your recent sessions were rated at close-out
+	@curl -sf "http://127.0.0.1:8080/v1/feedback" \
+		| python3 -c "import sys,json; d=json.load(sys.stdin); a=d['averages']; \
+print(); print('  averages over', d['rated'], 'rated sessions:', '  '.join(f'{k} {v}' for k,v in a.items()) or 'none yet'); print(); \
+[print(f\"  {s['day']}  {s['status']:<8} heard {s['heard'] if s['heard'] is not None else '-':>2}  focus {s['focus'] if s['focus'] is not None else '-':>2}  approach {s['approach'] if s['approach'] is not None else '-':>2}  overall {s['overall'] if s['overall'] is not None else '-':>2}  {s['comment']}\") for s in d['sessions']]; print()" \
+		|| echo "  no feedback yet, or the agent is not running"
+
 today-new: ## Throw today's list away and generate a fresh one
 	@curl -sf -X POST "http://127.0.0.1:8080/v1/daily/regenerate" >/dev/null \
 		&& $(MAKE) --no-print-directory today
@@ -268,13 +275,19 @@ psql: ## Open a psql session
 test: ## Run the unit tests
 	$(COMPOSE) exec rag pytest -q /srv/tests
 
-eval: eval-retrieval eval-safety ## Run all evals
+eval: eval-retrieval eval-safety eval-quality ## Run all evals
 
 eval-retrieval: ## Measure recall@k, with and without reranking
 	$(COMPOSE) exec rag python -m app.eval.retrieval /srv/eval/retrieval.yaml
 
 eval-safety: ## Check crisis handling
 	$(COMPOSE) exec rag python -m app.eval.safety /srv/eval/safety.yaml
+
+eval-quality: ## Score how it behaves as a therapist (20 scenarios, ~5 min): ONLY="id id" for a subset
+	@# Nothing is remembered or written while this runs — it never touches
+	@# your conversations. Results go to data/runtime/eval-quality/, and
+	@# each run is compared with the last.
+	$(COMPOSE) exec rag python -m app.eval.quality /srv/eval/quality.yaml $(if $(ONLY),--only $(ONLY))
 
 # ── Verification ───────────────────────────────────────────────────
 

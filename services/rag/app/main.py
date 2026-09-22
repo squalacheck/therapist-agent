@@ -18,7 +18,7 @@ import structlog
 from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
-from . import daily, embedding, memory, pipeline, session
+from . import daily, embedding, feedback, memory, pipeline, session
 from .config import get_settings
 from .llm import ModelUnavailable, get_llm
 from .schemas import (
@@ -66,6 +66,11 @@ async def lifespan(app: FastAPI):
                 await daily.init_schema()
             except Exception as exc:  # noqa: BLE001
                 log.error("startup.daily_schema_failed", error=str(exc))
+        if s.feedback_enabled:
+            try:
+                await feedback.init_schema()
+            except Exception as exc:  # noqa: BLE001
+                log.error("startup.feedback_schema_failed", error=str(exc))
     yield
     await get_llm().aclose()
 
@@ -123,6 +128,27 @@ def _scope(req: ChatCompletionRequest, header_chat_id: str | None) -> str:
     return memory.GLOBAL_SCOPE
 
 
+def _text_reply(text: str, model_name: str, stream: bool):
+    """A fixed message, in whichever shape the client asked for."""
+    if stream:
+        return StreamingResponse(
+            _sse(_once(text), model_name),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
+    return ChatCompletionResponse(
+        model=model_name,
+        choices=[
+            Choice(
+                index=0,
+                message=ChatMessage(role="assistant", content=text),
+                finish_reason="stop",
+            )
+        ],
+        usage=Usage(),
+    )
+
+
 @app.post("/v1/chat/completions")
 async def chat_completions(
     req: ChatCompletionRequest,
@@ -152,31 +178,41 @@ async def chat_completions(
     if not messages:
         raise HTTPException(status_code=400, detail="no user or assistant messages")
 
+    last_user = next((m.text() for m in reversed(messages) if m.role == "user"), "")
+    asks_feedback = settings.time_awareness and feedback.enabled_for(remember)
+
+    # An answer to "how was this one for you?". Checked before anything
+    # else, because "8 7 9 8" means nothing to the model and everything to
+    # the record. Anything that is not an answer lets the request lapse and
+    # the conversation simply carries on — they chose to keep talking.
+    if asks_feedback and (request_id := await feedback.pending(scope)) is not None:
+        answer = feedback.parse(last_user)
+        if answer is None and session.is_end_request(last_user):
+            answer = {"status": "skipped"}
+        try:
+            await feedback.resolve(request_id, answer)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("feedback.resolve_failed", error=str(exc))
+        if answer is not None:
+            return _text_reply(
+                feedback.thanks(answer, session.request_shutdown()), model_name, req.stream
+            )
+
     # "Let's end for now" — matched deterministically on the raw turn,
     # before any model sees it. This writes the profile, closes the session
     # and asks the host to stop the stack, and none of that should hinge on
     # whether a 27B agreed that you meant it.
-    last_user = next((m.text() for m in reversed(messages) if m.role == "user"), "")
     if settings.time_awareness and session.is_end_request(last_user):
-        summary = await session.close_out(messages, scope)
-        text = session.farewell(summary)
-        if req.stream:
-            return StreamingResponse(
-                _sse(_once(text), model_name),
-                media_type="text/event-stream",
-                headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
-            )
-        return ChatCompletionResponse(
-            model=model_name,
-            choices=[
-                Choice(
-                    index=0,
-                    message=ChatMessage(role="assistant", content=text),
-                    finish_reason="stop",
-                )
-            ],
-            usage=Usage(),
-        )
+        summary = await session.close_out(messages, scope, defer_shutdown=asks_feedback)
+        if asks_feedback and summary["exchanges"] >= settings.feedback_min_exchanges:
+            try:
+                await feedback.open_request(scope, summary["exchanges"])
+                return _text_reply(feedback.ask(summary), model_name, req.stream)
+            except Exception as exc:  # noqa: BLE001
+                log.warning("feedback.open_failed", error=str(exc))
+        if asks_feedback:
+            summary["shutdown_requested"] = session.request_shutdown()
+        return _text_reply(session.farewell(summary), model_name, req.stream)
 
     if settings.daily_enabled and req.model == settings.daily_model_name:
         stream = pipeline.run_daily(
@@ -223,6 +259,22 @@ async def chat_completions(
         ],
         usage=Usage(),
     )
+
+
+@app.get("/v1/feedback")
+async def feedback_history(limit: int = 30) -> JSONResponse:
+    """How recent sessions were rated, newest first, with averages."""
+    s = get_settings()
+    if not (s.feedback_enabled and s.memory_enabled):
+        raise HTTPException(status_code=404, detail="session feedback is disabled")
+    rows = await feedback.history(memory.GLOBAL_SCOPE, limit)
+    rated = [r for r in rows if r["status"] == "rated"]
+    averages = {
+        k: round(sum(r[k] for r in rated if r[k] is not None) / n, 1)
+        for k in feedback.KEYS
+        if (n := sum(1 for r in rated if r[k] is not None))
+    }
+    return JSONResponse({"sessions": rows, "averages": averages, "rated": len(rated)})
 
 
 @app.get("/v1/daily")
